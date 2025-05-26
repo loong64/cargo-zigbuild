@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        default: 'latest'
+        description: 'Package version'
+        type: string
+        required: true
+  schedule:
+    - cron: '0 17 * * *'
+
+jobs:
+  check-version:
+    name: Check
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+      build: ${{ steps.check-release.outputs.build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Get Version
+        id: get-version
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            version="latest"
+          else
+            version=${{ github.event.inputs.version }}
+          fi
+          if [ "${version}" = "latest" ]; then
+            version=$(curl -s "https://api.github.com/repos/rust-cross/cargo-zigbuild/releases/latest" | jq -r .tag_name)
+          fi
+          if [ -z "${version}" ] || [ "$version" = "null" ]; then
+            echo "Error: version is empty"
+            exit 1
+          fi
+          echo "version=${version}" >> $GITHUB_ENV
+          echo "version=${version}" >> $GITHUB_OUTPUT
+      - name: Check Release
+        id: check-release
+        run: |
+          gh release view ${version} -R ${{ github.repository }} >/dev/null 2>&1 || echo "create=1" >> $GITHUB_OUTPUT
+          gh release view ${version} -R ${{ github.repository }} | grep cargo-zigbuild-${version}.loongarch64-unknown-linux-musl.tar.gz >/dev/null 2>&1 || echo "build=1" >> $GITHUB_OUTPUT
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create tag
+        if: steps.check-release.outputs.create == '1'
+        run: |
+          git config --global user.name "${GITHUB_ACTOR}"
+          git config --global user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+          git add .
+          git commit -m "Release ${version}" || true
+          git tag ${version}
+          git push origin ${version} || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create release
+        if: steps.check-release.outputs.create == '1'
+        run: |
+          gh release create ${version} -R ${{ github.repository }} --title ${version} --notes "**Full Changelog**: [${version}](https://github.com/rust-cross/cargo-zigbuild/releases/tag/${version})"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  linux:
+    runs-on: ubuntu-latest
+    needs: check-version
+    if: needs.check-version.outputs.build == '1'
+    env:
+      version: ${{ needs.check-version.outputs.version }}
+    strategy:
+      matrix:
+        platform: [
+          { target: "loongarch64-unknown-linux-musl", image_tag: "loongarch64" },
+        ]
+    container:
+      image: docker://ghcr.io/loong64/musllinux_1_2-cross:${{ matrix.platform.image_tag }}
+      env:
+        RUSTUP_HOME: /root/.rustup
+        CARGO_HOME: /root/.cargo
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: rust-cross/cargo-zigbuild
+          ref: ${{ env.version }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.target }}
+      - name: Build
+        uses: loong64/maturin-action@main
+        with:
+          target: ${{ matrix.platform.target }}
+          manylinux: auto
+          container: off
+          args: --release -o dist --strip
+          # sccache: 'true'
+      - name: "Upload wheels"
+        run: |
+          pip install twine==6.0.1
+          for file in dist/*.whl; do
+            twine upload --repository-url https://gitlab.com/api/v4/projects/65746188/packages/pypi $file || true
+          done
+        env:
+          TWINE_USERNAME: ${{ github.repository_owner }}
+          TWINE_PASSWORD: ${{ secrets.GL_TOKEN }}
+      - name: Archive binary
+        run: |
+          cd target/${{ matrix.platform.target }}/release
+          tar czvf cargo-zigbuild-${{ github.ref_name }}.${{ matrix.platform.target }}.tar.gz cargo-zigbuild
+          shasum -a 256 cargo-zigbuild-${{ github.ref_name }}.${{ matrix.platform.target }}.tar.gz > cargo-zigbuild-${{ github.ref_name }}.${{ matrix.platform.target }}.tar.gz.sha256
+          cd -
+      - name: Upload binary to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: ${{ github.repository }}
+          tag_name: ${{ env.version }}
+          files: |
+            target/${{ matrix.platform.target }}/release/cargo-zigbuild*.tar.gz*
