@@ -20,7 +20,7 @@ jobs:
       build: ${{ steps.check-release.outputs.build }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Get Version
         id: get-version
         run: |
@@ -72,21 +72,21 @@ jobs:
     strategy:
       matrix:
         platform: [
-          { target: "loongarch64-unknown-linux-musl", image_tag: "loongarch64" },
+          { target: "loongarch64-unknown-linux-musl", image_tag: "loongarch64-musl" },
         ]
     container:
-      image: docker://ghcr.io/loong64/musllinux_1_2-cross:${{ matrix.platform.image_tag }}
+      image: docker://ghcr.io/loong64/rust-musl-cross:${{ matrix.platform.image_tag }}
       env:
         RUSTUP_HOME: /root/.rustup
         CARGO_HOME: /root/.cargo
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: rust-cross/cargo-zigbuild
           ref: ${{ env.version }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform.target }}
+      - name: Prepare build
+        run:
+          sed -i 's/requires = \["maturin>[^"]*"]/requires = ["maturin"]/' pyproject.toml
       - name: Build
         uses: loong64/maturin-action@main
         with:
@@ -107,13 +107,14 @@ jobs:
       - name: Archive binary
         run: |
           cd target/${{ matrix.platform.target }}/release
-          tar czvf cargo-zigbuild-${{ github.ref_name }}.${{ matrix.platform.target }}.tar.gz cargo-zigbuild
-          shasum -a 256 cargo-zigbuild-${{ github.ref_name }}.${{ matrix.platform.target }}.tar.gz > cargo-zigbuild-${{ github.ref_name }}.${{ matrix.platform.target }}.tar.gz.sha256
+          tar czvf cargo-zigbuild-${{ env.version }}.${{ matrix.platform.target }}.tar.gz cargo-zigbuild
+          shasum -a 256 cargo-zigbuild-${{ env.version }}.${{ matrix.platform.target }}.tar.gz > cargo-zigbuild-${{ env.version }}.${{ matrix.platform.target }}.tar.gz.sha256
           cd -
       - name: Upload binary to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           repository: ${{ github.repository }}
           tag_name: ${{ env.version }}
+          generate_release_notes: false
           files: |
             target/${{ matrix.platform.target }}/release/cargo-zigbuild*.tar.gz*
