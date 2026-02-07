@@ -14,7 +14,7 @@ on:
 jobs:
   check-version:
     name: Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     outputs:
       version: ${{ steps.get-version.outputs.version }}
       build: ${{ steps.check-release.outputs.build }}
@@ -88,7 +88,7 @@ jobs:
         run:
           sed -i 's/requires = \["maturin>[^"]*"]/requires = ["maturin"]/' pyproject.toml
       - name: Build
-        uses: loong64/maturin-action@main
+        uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
           manylinux: auto
